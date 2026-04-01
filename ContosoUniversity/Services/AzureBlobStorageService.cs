@@ -137,61 +137,8 @@ namespace ContosoUniversity.Services
         }
 
         /// <summary>
-        /// Generates a SAS URI for a blob with limited access
-        /// </summary>
-        public async Task<Uri> GenerateBlobSasUriAsync(string containerName, string blobName, TimeSpan expiresIn)
-        {
-            try
-            {
-                var container = await GetOrCreateContainerAsync(containerName);
-                var blobClient = container.GetBlobClient(blobName);
-                
-                // Generate SAS URI with read permission for the specified duration
-                BlobSasBuilder sasBuilder = new BlobSasBuilder()
-                {
-                    BlobContainerName = containerName,
-                    BlobName = blobName,
-                    Resource = "b",
-                    ExpiresOn = DateTimeOffset.UtcNow.Add(expiresIn),
-                    Protocol = Azure.Storage.Sas.SasProtocol.Https,
-                };
-                
-                // Set read permissions
-                sasBuilder.SetPermissions(Azure.Storage.Sas.BlobSasPermissions.Read);
-                
-                // Generate the SAS token and return the URI
-                var sasToken = sasBuilder.ToSasQueryParameters(
-                    new Azure.Storage.StorageSharedKeyCredential(
-                        _blobServiceClient.AccountName,
-                        GetAccountKey())).ToString();
-                
-                var sasUri = new UriBuilder(blobClient.Uri);
-                sasUri.Query = sasToken;
-                
-                return sasUri.Uri;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error generating SAS URI for blob '{blobName}': {ex.Message}");
-                throw;
-            }
-        }
-
-        /// <summary>
         /// Gets the storage account name
         /// </summary>
         public string AccountName => _blobServiceClient.AccountName;
-
-        /// <summary>
-        /// Helper method to get account key (placeholder - in practice, use key from configuration)
-        /// </summary>
-        private string GetAccountKey()
-        {
-            // This is a placeholder. In production, retrieve the storage account key from 
-            // secure configuration or Key Vault
-            throw new NotImplementedException(
-                "SAS token generation requires storage account key. " +
-                "For Managed Identity authentication, use BlobClient.Uri directly instead of SAS tokens.");
-        }
     }
 }

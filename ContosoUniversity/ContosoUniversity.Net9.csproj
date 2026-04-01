@@ -13,4 +13,15 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.11" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11" />
   </ItemGroup>
+
+  <!-- Exclude legacy ASP.NET MVC files that are not compatible with ASP.NET Core -->
+  <ItemGroup>
+    <Compile Remove="App_Start/**" />
+    <Compile Remove="Global.asax.cs" />
+  </ItemGroup>
+
+  <!-- Exclude legacy ASP.NET files -->
+  <ItemGroup>
+    <None Remove="Global.asax" />
+  </ItemGroup>
 </Project>
