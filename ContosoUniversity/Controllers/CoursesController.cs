@@ -5,13 +5,41 @@ using System.Net;
 using System.Web.Mvc;
 using System.IO;
 using System.Web;
+using System.Threading.Tasks;
 using ContosoUniversity.Data;
 using ContosoUniversity.Models;
+using ContosoUniversity.Services;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 
 namespace ContosoUniversity.Controllers
 {
     public class CoursesController : BaseController
     {
+        private AzureBlobStorageService _azureBlobStorageService;
+        private readonly string _teachingMaterialsContainer = "teaching-materials";
+
+        public CoursesController()
+            : base()
+        {
+            // Initialize Azure Blob Storage Service if configuration is available
+            try
+            {
+                // Note: In this hybrid ASP.NET MVC/Core application, we get config from environment
+                var endpoint = Environment.GetEnvironmentVariable("AzureStorageBlob__Endpoint") 
+                    ?? "https://yourstorageaccount.blob.core.windows.net";
+                
+                if (!endpoint.Contains("yourstorageaccount"))
+                {
+                    _azureBlobStorageService = new AzureBlobStorageService(endpoint);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to initialize Azure Blob Storage Service: {ex.Message}");
+            }
+        }
+
         // GET: Courses
         public ActionResult Index()
         {
@@ -41,10 +69,10 @@ namespace ContosoUniversity.Controllers
             return View(new Course());
         }
 
-        // POST: Courses/Create
+        // POST: Courses/Create - Now async to support async blob operations
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public ActionResult Create([Bind(Include = "CourseID,Title,Credits,DepartmentID,TeachingMaterialImagePath")] Course course, HttpPostedFileBase teachingMaterialImage)
+        public async Task<ActionResult> Create([Bind(Include = "CourseID,Title,Credits,DepartmentID,TeachingMaterialImagePath")] Course course, HttpPostedFileBase teachingMaterialImage)
         {
             if (ModelState.IsValid)
             {
@@ -72,20 +100,30 @@ namespace ContosoUniversity.Controllers
 
                     try
                     {
-                        // Create uploads directory if it doesn't exist
-                        var uploadsPath = Server.MapPath("~/Uploads/TeachingMaterials/");
-                        if (!Directory.Exists(uploadsPath))
+                        if (_azureBlobStorageService != null)
                         {
-                            Directory.CreateDirectory(uploadsPath);
+                            // Upload to Azure Blob Storage
+                            var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
+                            var blobUri = await _azureBlobStorageService.UploadBlobAsync(
+                                _teachingMaterialsContainer, 
+                                fileName, 
+                                teachingMaterialImage.InputStream,
+                                overwrite: true);
+                            course.TeachingMaterialImagePath = blobUri;
                         }
-
-                        // Generate unique filename
-                        var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
-                        var filePath = Path.Combine(uploadsPath, fileName);
-
-                        // Save file
-                        teachingMaterialImage.SaveAs(filePath);
-                        course.TeachingMaterialImagePath = $"~/Uploads/TeachingMaterials/{fileName}";
+                        else
+                        {
+                            // Fallback to local file system if Azure Blob Storage is not configured
+                            var uploadsPath = Server.MapPath("~/Uploads/TeachingMaterials/");
+                            if (!Directory.Exists(uploadsPath))
+                            {
+                                Directory.CreateDirectory(uploadsPath);
+                            }
+                            var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
+                            var filePath = Path.Combine(uploadsPath, fileName);
+                            teachingMaterialImage.SaveAs(filePath);
+                            course.TeachingMaterialImagePath = $"~/Uploads/TeachingMaterials/{fileName}";
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -124,10 +162,10 @@ namespace ContosoUniversity.Controllers
             return View(course);
         }
 
-        // POST: Courses/Edit/5
+        // POST: Courses/Edit/5 - Now async to support async blob operations
         [HttpPost]
         [ValidateAntiForgeryToken]
-        public ActionResult Edit([Bind(Include = "CourseID,Title,Credits,DepartmentID,TeachingMaterialImagePath")] Course course, HttpPostedFileBase teachingMaterialImage)
+        public async Task<ActionResult> Edit([Bind(Include = "CourseID,Title,Credits,DepartmentID,TeachingMaterialImagePath")] Course course, HttpPostedFileBase teachingMaterialImage)
         {
             if (ModelState.IsValid)
             {
@@ -155,30 +193,59 @@ namespace ContosoUniversity.Controllers
 
                     try
                     {
-                        // Create uploads directory if it doesn't exist
-                        var uploadsPath = Server.MapPath("~/Uploads/TeachingMaterials/");
-                        if (!Directory.Exists(uploadsPath))
+                        if (_azureBlobStorageService != null)
                         {
-                            Directory.CreateDirectory(uploadsPath);
-                        }
-
-                        // Generate unique filename
-                        var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
-                        var filePath = Path.Combine(uploadsPath, fileName);
-
-                        // Delete old file if exists
-                        if (!string.IsNullOrEmpty(course.TeachingMaterialImagePath))
-                        {
-                            var oldFilePath = Server.MapPath(course.TeachingMaterialImagePath);
-                            if (System.IO.File.Exists(oldFilePath))
+                            // Delete old blob if exists
+                            if (!string.IsNullOrEmpty(course.TeachingMaterialImagePath))
                             {
-                                System.IO.File.Delete(oldFilePath);
+                                try
+                                {
+                                    // Extract filename from blob URI
+                                    var oldBlobName = new Uri(course.TeachingMaterialImagePath).Segments.Last();
+                                    await _azureBlobStorageService.DeleteBlobAsync(_teachingMaterialsContainer, oldBlobName);
+                                }
+                                catch (Exception ex)
+                                {
+                                    // Log but don't fail if old blob can't be deleted
+                                    System.Diagnostics.Debug.WriteLine($"Error deleting old blob: {ex.Message}");
+                                }
                             }
-                        }
 
-                        // Save new file
-                        teachingMaterialImage.SaveAs(filePath);
-                        course.TeachingMaterialImagePath = $"~/Uploads/TeachingMaterials/{fileName}";
+                            // Upload new blob
+                            var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
+                            var blobUri = await _azureBlobStorageService.UploadBlobAsync(
+                                _teachingMaterialsContainer, 
+                                fileName, 
+                                teachingMaterialImage.InputStream,
+                                overwrite: true);
+                            course.TeachingMaterialImagePath = blobUri;
+                        }
+                        else
+                        {
+                            // Fallback to local file system if Azure Blob Storage is not configured
+                            var uploadsPath = Server.MapPath("~/Uploads/TeachingMaterials/");
+                            if (!Directory.Exists(uploadsPath))
+                            {
+                                Directory.CreateDirectory(uploadsPath);
+                            }
+
+                            var fileName = $"course_{course.CourseID}_{Guid.NewGuid()}{fileExtension}";
+                            var filePath = Path.Combine(uploadsPath, fileName);
+
+                            // Delete old file if exists
+                            if (!string.IsNullOrEmpty(course.TeachingMaterialImagePath) && course.TeachingMaterialImagePath.StartsWith("~/"))
+                            {
+                                var oldFilePath = Server.MapPath(course.TeachingMaterialImagePath);
+                                if (System.IO.File.Exists(oldFilePath))
+                                {
+                                    System.IO.File.Delete(oldFilePath);
+                                }
+                            }
+
+                            // Save new file
+                            teachingMaterialImage.SaveAs(filePath);
+                            course.TeachingMaterialImagePath = $"~/Uploads/TeachingMaterials/{fileName}";
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -215,30 +282,39 @@ namespace ContosoUniversity.Controllers
             return View(course);
         }
 
-        // POST: Courses/Delete/5
+        // POST: Courses/Delete/5 - Now async to support async blob operations
         [HttpPost, ActionName("Delete")]
         [ValidateAntiForgeryToken]
-        public ActionResult DeleteConfirmed(int id)
+        public async Task<ActionResult> DeleteConfirmed(int id)
         {
             Course course = db.Courses.Find(id);
             var courseTitle = course.Title;
             
-            // Delete associated image file if it exists
+            // Delete associated blob or file
             if (!string.IsNullOrEmpty(course.TeachingMaterialImagePath))
             {
-                var filePath = Server.MapPath(course.TeachingMaterialImagePath);
-                if (System.IO.File.Exists(filePath))
+                try
                 {
-                    try
+                    if (_azureBlobStorageService != null && course.TeachingMaterialImagePath.StartsWith("https://"))
                     {
-                        System.IO.File.Delete(filePath);
+                        // Delete from Azure Blob Storage
+                        var blobName = new Uri(course.TeachingMaterialImagePath).Segments.Last();
+                        await _azureBlobStorageService.DeleteBlobAsync(_teachingMaterialsContainer, blobName);
                     }
-                    catch (Exception ex)
+                    else if (course.TeachingMaterialImagePath.StartsWith("~/"))
                     {
-                        // Log the error but don't prevent deletion of the course
-                        // In a production application, you would log this error properly
-                        System.Diagnostics.Debug.WriteLine($"Error deleting file: {ex.Message}");
+                        // Delete from local file system
+                        var filePath = Server.MapPath(course.TeachingMaterialImagePath);
+                        if (System.IO.File.Exists(filePath))
+                        {
+                            System.IO.File.Delete(filePath);
+                        }
                     }
+                }
+                catch (Exception ex)
+                {
+                    // Log the error but don't prevent deletion of the course
+                    System.Diagnostics.Debug.WriteLine($"Error deleting file/blob: {ex.Message}");
                 }
             }
             
